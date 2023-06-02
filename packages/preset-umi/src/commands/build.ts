@@ -161,6 +161,7 @@ umi build --clean
               publicPath: api.config.publicPath,
             });
         const { vite } = api.args;
+
         const markupArgs = await getMarkupArgs({ api });
         const finalMarkUpArgs = {
           ...markupArgs,

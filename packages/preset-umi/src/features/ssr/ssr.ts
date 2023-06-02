@@ -8,7 +8,7 @@ import assert from 'assert';
 import { existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { IApi } from '../../types';
-import { absServerBuildPath } from './utils';
+import { absServerBuildPath, getPreRenderedHTML } from './utils';
 
 export default (api: IApi) => {
   const esbuildBuilder: typeof import('./builder/builder') = importLazy(
@@ -17,6 +17,29 @@ export default (api: IApi) => {
   const webpackBuilder: typeof import('./webpack/webpack') = importLazy(
     require.resolve('./webpack/webpack'),
   );
+
+  // 如果 exportStatic 不存在的时候。预渲染一下 index.html
+  if (!api.config.exportStatic) {
+    // export routes to html files
+    api.modifyExportHTMLFiles(async (_defaultFiles) => {
+      const preRenderFils: typeof _defaultFiles = [];
+      for await (const file of _defaultFiles.filter(
+        (f) => !f.path.includes(':'),
+      )) {
+        // 只需要 index.html 就好了，404  copy 一下 index。但是最好还是开一下 exportStatic
+        if (file.path === 'index.html') {
+          const html = await getPreRenderedHTML(api, file.content, '/');
+          preRenderFils.push({
+            path: file.path,
+            content: html,
+          });
+        } else {
+          preRenderFils.push(file);
+        }
+      }
+      return preRenderFils;
+    });
+  }
 
   api.describe({
     key: 'ssr',
@@ -69,6 +92,30 @@ export default (api: IApi) => {
       content: `
       import * as React from 'react';
 export { React };
+`,
+    });
+
+    api.writeTmpFile({
+      noPluginDir: true,
+      path: 'core/serverInsertedHTMLContext.ts',
+      content: `
+// Use React.createContext to avoid errors from the RSC checks because
+// it can't be imported directly in Server Components:
+import React from 'react'
+
+export type ServerInsertedHTMLHook = (callbacks: () => React.ReactNode) => void;
+// More info: https://github.com/vercel/next.js/pull/40686
+export const ServerInsertedHTMLContext =
+  React.createContext<ServerInsertedHTMLHook | null>(null as any);
+
+// copy form https://github.com/vercel/next.js/blob/fa076a3a69c9ccf63c9d1e53e7b681aa6dc23db7/packages/next/src/shared/lib/server-inserted-html.tsx#L13
+export function useServerInsertedHTML(callback: () => React.ReactNode): void {
+  const addInsertedServerHTMLCallback = React.useContext(ServerInsertedHTMLContext);
+  // Should have no effects on client where there's no flush effects provider
+  if (addInsertedServerHTMLCallback) {
+    addInsertedServerHTMLCallback(callback);
+  }
+}
 `,
     });
   });
